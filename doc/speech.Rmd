@@ -1,0 +1,203 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+rm(list=ls())
+
+# check packages that need to be installed.
+packages.used=c("readxl","readr","tm", "wordcloud", "RColorBrewer", "dplyr",
+                "tidytext","rvest","tibble","qdap","sentimentr",
+                "gplots","syuzhet","factoextra","beeswarm","scales",
+                "RColorBrewer","RANN","topicmodels")
+
+packages.needed=setdiff(packages.used, intersect(installed.packages()[,1], packages.used))
+
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE,repos='http://cran.us.r-project.org')
+}
+# load packages
+library(readxl)
+library(readr)
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+library(dplyr)
+library(tidytext)
+library(rvest)
+library(tibble)
+library(qdap)
+library(sentimentr)
+library(gplots)
+library(syuzhet)
+library(factoextra)
+library(beeswarm)
+library(scales)
+library(RColorBrewer)
+library(RANN)
+library(topicmodels)
+
+```
+
+```{r}
+# Group data
+# Republicans vs Democrats
+inaug_info <- read_excel("../data/InaugurationInfo.xlsx")
+inaug_info_GOP <- inaug_info[inaug_info$Party=='Republican',]
+inaug_info_DNC <- inaug_info[inaug_info$Party=='Democratic',]
+inaug_info <- rbind(inaug_info_GOP,inaug_info_DNC) #Removing those who are not GOP or DNC.
+
+dim(inaug_info_GOP)
+dim(inaug_info_DNC)
+dim(inaug_info)
+```
+
+```{r}
+# Speeches of presidents who served multiple terms vs one term
+multi_term_pres <- inaug_info[inaug_info$Term!='1',]
+one_term_pres <- inaug_info[-which(inaug_info$President %in% multi_term_pres$President),]
+multi_term_pres <- inaug_info[which(inaug_info$President %in% multi_term_pres$President),]
+
+# handle an exception -- Grover Cleveland
+one_term_pres <- one_term_pres[one_term_pres$President != 'Grover Cleveland - I',]
+multi_term_pres <- rbind(multi_term_pres,
+                         inaug_info[inaug_info$President=='Grover Cleveland - I',])
+
+dim(one_term_pres)
+dim(multi_term_pres)
+```
+
+```{r}
+# Pre-processing
+folder.path="../data/InauguralSpeeches/"
+
+# Add text to the inaug_info df.
+inaug_info$fulltext <- NA
+for(i in seq(nrow(inaug_info))){
+  original_file = paste0("inaug", as.vector(inaug_info$File[i]),
+                         "-",as.vector(inaug_info$Term[i]),".txt")
+  text = read_file(file.path(folder.path, original_file))
+  inaug_info$fulltext[i]=text
+}
+
+inaug_info
+```
+
+```{r}
+#Create a sentence list with NRC sentiments
+sentence.list<-NULL
+for(i in 1:nrow(inaug_info)){
+  sentences=sent_detect(inaug_info$fulltext[i],endmarks = c("?", ".", "!", "|",";"))
+  if(length(sentences)>0){
+    emotions=get_nrc_sentiment(sentences)
+    word_count=word_count(sentences)
+    emotions=diag(1/(word_count+0.01))%*%as.matrix(emotions)
+    sentence.list=rbind(sentence.list, 
+                        cbind(inaug_info[i,-ncol(inaug_info)],
+                              sentences=as.character(sentences), 
+                              word_count,
+                              emotions,
+                              sent_id=1:length(sentences)
+                        )
+    )
+  }
+}
+sentence.list= sentence.list%>% filter(!is.na(word_count)) 
+summary(sentence.list)
+```
+```{r}
+### Create a dir for multi_term presidents' speeches
+dir.create(file.path(folder.path, "multi_term"),showWarnings = FALSE)
+for(i in seq(nrow(multi_term_pres))){
+  original_file = paste0("inaug", as.vector(multi_term_pres$File[i]),
+                    "-",as.vector(multi_term_pres$Term[i]),".txt")
+  text = read_file(file.path(folder.path, original_file))
+  new_file <- paste0(folder.path, "multi_term/", original_file)
+  sink(file = new_file) %>% 
+    cat(text)  # write the file
+  sink()
+}
+
+### Create a dir for single_term presidents' speeches
+dir.create(file.path(folder.path, "single_term"),showWarnings = FALSE)
+for(i in seq(nrow(one_term_pres))){
+  original_file = paste0("inaug", as.vector(one_term_pres$File[i]),
+                         "-",as.vector(one_term_pres$Term[i]),".txt")
+  text = read_file(file.path(folder.path, original_file))
+  new_file <- paste0(folder.path, "single_term/", original_file)
+  sink(file = new_file) %>% 
+    cat(text)  # write the file
+  sink()
+}
+```
+
+```{r}
+###############################################################
+#### Word cloud & frequent words
+###############################################################
+
+single_term_path <- paste0(folder.path, "single_term/")
+multi_term_path <- paste0(folder.path, "multi_term/")
+
+single_term_speeches =list.files(path = single_term_path, pattern = "*.txt")
+multi_term_speeches=list.files(path = multi_term_path, pattern = "*.txt")
+noprex_single_term_sp=substr(single_term_speeches, 6, nchar(single_term_speeches)-4)
+noprex_multi_term_sp=substr(multi_term_speeches, 6, nchar(multi_term_speeches)-4)
+
+ff_single_term <- Corpus(DirSource(single_term_path))
+ff_multi_term <- Corpus(DirSource(multi_term_path))
+
+cleanupCorpus <- function(ff){
+  ff<-tm_map(ff, stripWhitespace)
+  ff<-tm_map(ff, content_transformer(tolower))
+  ff<-tm_map(ff, removeWords, stopwords("english"))
+  ff<-tm_map(ff, removeWords, character(0))
+  ff<-tm_map(ff, removePunctuation)
+}
+
+ff_single_term = cleanupCorpus(ff_single_term)
+ff_multi_term = cleanupCorpus(ff_multi_term)
+
+tdm_single <- TermDocumentMatrix(ff_single_term)
+tdm_single_tidy = tidy(tdm_single)
+tdm_single_overall=summarise(group_by(tdm_single_tidy, term), sum(count))
+
+tdm_multi <- TermDocumentMatrix(ff_multi_term)
+tdm_multi_tidy = tidy(tdm_multi)
+tdm_multi_overall=summarise(group_by(tdm_multi_tidy, term), sum(count))
+
+print('multi-term presidents\' frequent terms')
+findFreqTerms(tdm_multi,100)
+print('single-term presidents\' frequent terms')
+findFreqTerms(tdm_single,100)
+
+set.seed(123)
+wordcloud(tdm_single_overall$term, tdm_single_overall$`sum(count)`,
+          scale=c(4,0.5),
+          max.words=50,
+          min.freq=1,
+          random.order=FALSE,
+          rot.per=0.2,
+          use.r.layout=T,
+          random.color=FALSE,
+          colors=brewer.pal(3,"Dark2"))
+wordcloud(tdm_multi_overall$term, tdm_single_overall$`sum(count)`,
+          scale=c(4,0.5),
+          max.words=50,
+          min.freq=1,
+          random.order=FALSE,
+          rot.per=0.2,
+          use.r.layout=T,
+          random.color=FALSE,
+          colors=brewer.pal(3,"Dark2"))
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
