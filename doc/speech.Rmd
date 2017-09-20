@@ -1,12 +1,12 @@
 ---
-title: "R Notebook"
+title: "Single-term presidents vs multi-term presidents"
 output: html_notebook
 ---
+## Did their speeches differ?
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+In this project, I looked at the presidents' inauguation speeches for those who belong to either Democratic or Republican parties. I compared the presidents who only served one-term to those who served multiple terms, and tried to find if there are any differences.
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
-
+# Step 1: Install and load packages
 ```{r}
 rm(list=ls())
 
@@ -14,7 +14,7 @@ rm(list=ls())
 packages.used=c("readxl","readr","tm", "wordcloud", "RColorBrewer", "dplyr",
                 "tidytext","rvest","tibble","qdap","sentimentr",
                 "gplots","syuzhet","factoextra","beeswarm","scales",
-                "RColorBrewer","RANN","topicmodels")
+                "RColorBrewer","RANN","topicmodels","ggplot2","reshape")
 
 packages.needed=setdiff(packages.used, intersect(installed.packages()[,1], packages.used))
 
@@ -22,6 +22,7 @@ packages.needed=setdiff(packages.used, intersect(installed.packages()[,1], packa
 if(length(packages.needed)>0){
   install.packages(packages.needed, dependencies = TRUE,repos='http://cran.us.r-project.org')
 }
+
 # load packages
 library(readxl)
 library(readr)
@@ -42,9 +43,17 @@ library(scales)
 library(RColorBrewer)
 library(RANN)
 library(topicmodels)
+library(ggplot2)
+library(reshape)
 
 ```
 
+```{r}
+print(R.version)
+```
+
+# Step 2: Pre-processing
+### Group data - Republicans & Democrats
 ```{r}
 # Group data
 # Republicans vs Democrats
@@ -57,7 +66,7 @@ dim(inaug_info_GOP)
 dim(inaug_info_DNC)
 dim(inaug_info)
 ```
-
+### Group data - single-term & multi-term presidents
 ```{r}
 # Speeches of presidents who served multiple terms vs one term
 multi_term_pres <- inaug_info[inaug_info$Term!='1',]
@@ -66,19 +75,26 @@ multi_term_pres <- inaug_info[which(inaug_info$President %in% multi_term_pres$Pr
 
 # handle an exception -- Grover Cleveland
 one_term_pres <- one_term_pres[one_term_pres$President != 'Grover Cleveland - I',]
-multi_term_pres <- rbind(multi_term_pres,
-                         inaug_info[inaug_info$President=='Grover Cleveland - I',])
+multi_term_pres <- rbind(multi_term_pres,inaug_info[inaug_info$President=='Grover Cleveland - I',])
 
+# Add a column to identify one-term or multi-term president.
+one_term_pres$Type <- 'Single-Term'
+multi_term_pres$Type <- 'Multi-Term'
+
+# Check and overwrite inaug_info.
 dim(one_term_pres)
 dim(multi_term_pres)
-```
 
+inaug_info <- rbind(one_term_pres,multi_term_pres)
+```
+### Add text data & NRC sentiments to the inaug_info file
 ```{r}
 # Pre-processing
 folder.path="../data/InauguralSpeeches/"
 
 # Add text to the inaug_info df.
 inaug_info$fulltext <- NA
+
 for(i in seq(nrow(inaug_info))){
   original_file = paste0("inaug", as.vector(inaug_info$File[i]),
                          "-",as.vector(inaug_info$Term[i]),".txt")
@@ -111,6 +127,8 @@ for(i in 1:nrow(inaug_info)){
 sentence.list= sentence.list%>% filter(!is.na(word_count)) 
 summary(sentence.list)
 ```
+
+### Group speech files into directories by term length
 ```{r}
 ### Create a dir for multi_term presidents' speeches
 dir.create(file.path(folder.path, "multi_term"),showWarnings = FALSE)
@@ -137,6 +155,8 @@ for(i in seq(nrow(one_term_pres))){
 }
 ```
 
+# Step 3 Data Analysis - word cloud & frequent words
+First, let's look at what kind of words were used in the speeches, and if there are any significant differences between the two groups (single-term vs multi-term).
 ```{r}
 ###############################################################
 #### Word cloud & frequent words
@@ -172,10 +192,10 @@ tdm_multi <- TermDocumentMatrix(ff_multi_term)
 tdm_multi_tidy = tidy(tdm_multi)
 tdm_multi_overall=summarise(group_by(tdm_multi_tidy, term), sum(count))
 
-print('multi-term presidents\' frequent terms')
-findFreqTerms(tdm_multi,100)
 print('single-term presidents\' frequent terms')
 findFreqTerms(tdm_single,100)
+print('multi-term presidents\' frequent terms')
+findFreqTerms(tdm_multi,100)
 
 set.seed(123)
 wordcloud(tdm_single_overall$term, tdm_single_overall$`sum(count)`,
@@ -197,7 +217,288 @@ wordcloud(tdm_multi_overall$term, tdm_single_overall$`sum(count)`,
           random.color=FALSE,
           colors=brewer.pal(3,"Dark2"))
 ```
+At a glance, single-term presidents' words seem more formal (government, country, people, states, etc.), compared to those by multi-term presidents' words (warming, candor, music, wellinformed, hang, etc.).
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+Did multi-term presidents tend to use more emotionally-charged words? And did single-term presidents tend to be more formal? 
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+Let's find out.
+
+# Step 4 Data Analysis - sentiment analysis
+In this section, I looked at the magnitude and types of emotions contained in each sentence used by two groups. 
+
+Furthermore, I separated multi-term presidents' speeches into two groups, because I wondered if their first speeches are actually similar to those by the single-term presidents, and they may become more relaxed for their 2nd speeches.
+
+```{r}
+# Mean of each emotion score by group
+single_emo_means=colMeans(sentence.list%>% 
+                            filter(Type=="Single-Term")%>%
+                            select(anger:trust)>0.01)
+multi_emo_means1=colMeans(sentence.list%>%
+                            filter(Type=="Multi-Term",Term==1)%>%
+                            select(anger:trust)>0.01)
+multi_emo_means2=colMeans(sentence.list%>%
+                            filter(Type=="Multi-Term",Term!=1)%>%
+                            select(anger:trust)>0.01)
+# Merge them as a df.
+types = c("single-term","multi-term 1st","multi-term 2nd+")
+emo_means = data.frame(types,
+                       rbind(single_emo_means,multi_emo_means1,multi_emo_means2),
+                       row.names=NULL)
+emo_means$types <- factor(emo_means$types, as.character(emo_means$types))
+emo_means.m = melt(emo_means,id.vars='types')
+
+# Plot a grouped bar chart
+ggplot(emo_means.m, aes(variable, value)) +   
+  geom_bar(aes(fill = types), position = "dodge", stat="identity")
+```
+
+Unlike what I assumed from looking at the Word Clouds, single-term presidents' sentences tend to have higher scores for emotions.
+
+Interestingly, multi-term presidents' first speeches have lower emotion scores, and the scores became higher for the second speeches. Still, they are lower than the scores by single-term presidents.
+
+Let's look at some of those emotional sentences.
+
+```{r}
+### What are the emotionally charged sentences?
+print("##### Single Term #####")
+speech.df=tbl_df(sentence.list)%>%
+  filter(Type=="Single-Term", word_count>=5)%>%
+  select(President, sentences, anger:trust)
+speech.df=as.data.frame(speech.df)
+as.character(speech.df$sentences[apply(speech.df[,-c(1:2)], 2, which.max)])
+
+print("##### Multi Term - 1st speech #####")
+speech.df=tbl_df(sentence.list)%>%
+  filter(Type=="Multi-Term", Term == 1, word_count>=5)%>%
+  select(President, sentences, anger:trust)
+speech.df=as.data.frame(speech.df)
+as.character(speech.df$sentences[apply(speech.df[,-c(1:2)], 2, which.max)])
+
+print("##### Multi Term - 2nd+ speech #####")
+speech.df=tbl_df(sentence.list)%>%
+  filter(Type=="Multi-Term", Term != 1, word_count>=5)%>%
+  select(President, sentences, anger:trust)
+speech.df=as.data.frame(speech.df)
+as.character(speech.df$sentences[apply(speech.df[,-c(1:2)], 2, which.max)])
+```
+
+# Step 5 Data Analysis - topic modeling
+
+In this section, I looked at if there are any differences in topics discussed in the speeches of single-term presidents v.s. multi-term presidents.
+```{r}
+# prepare snipets
+corpus.list=sentence.list[2:(nrow(sentence.list)-1), ]
+sentence.pre=sentence.list$sentences[1:(nrow(sentence.list)-2)]
+sentence.post=sentence.list$sentences[3:(nrow(sentence.list)-1)]
+corpus.list$snipets=paste(sentence.pre, corpus.list$sentences, sentence.post, sep=" ")
+rm.rows=(1:nrow(corpus.list))[corpus.list$sent_id==1]
+rm.rows=c(rm.rows, rm.rows-1)
+corpus.list=corpus.list[-rm.rows, ]
+
+docs <- Corpus(VectorSource(corpus.list$snipets))
+set.seed(123)
+writeLines(as.character(docs[[sample(1:nrow(corpus.list), 1)]]))
+```
+```{r}
+# clean up
+docs = cleanupCorpus(docs) # the function we used for the word cloud corpus
+docs = tm_map(docs, removeNumbers)
+docs = tm_map(docs,stemDocument)
+
+set.seed(123)
+writeLines(as.character(docs[[sample(1:nrow(corpus.list), 1)]]))
+```
+```{r}
+dtm <- DocumentTermMatrix(docs)
+
+#convert rownames to filenames
+rownames(dtm)=paste(substr(corpus.list$Type, 1, nchar(corpus.list$Type)-5), 
+                    corpus.list$File, corpus.list$Term, 
+                    corpus.list$sent_id, sep="_")
+
+rowTotals=apply(dtm, 1, sum) #sum of words in each doc
+dtm = dtm[rowTotals>0, ]
+corpus.list=corpus.list[rowTotals>0, ]
+```
+
+### Let's run LDA with Gibbs sampling
+```{r}
+#LDA with Gibbs
+burnin = 1000
+iter = 2000
+thin = 200
+seed = list(6558,7,631,10009,4921)
+nstart = 5
+best = TRUE
+
+k=15 #num of topics
+set.seed(123)
+ldaOut <-LDA(dtm, k, method="Gibbs", control=list(nstart=nstart, 
+                                                  seed = seed, best=best,
+                                                  burnin = burnin, iter = iter, 
+                                                  thin=thin))
+```
+
+```{r}
+#write out results
+#docs to topics
+ldaOut.topics <- as.matrix(topics(ldaOut))
+table(c(1:k, ldaOut.topics))
+dir.create(file.path('output/LDAGibbs'),showWarnings = FALSE)
+write.csv(ldaOut.topics,file=paste0("../output/LDAGibbs/",k,"DocsToTopics.csv"))
+
+#top 10 terms in each topic
+ldaOut.terms <- as.matrix(terms(ldaOut,10))
+write.csv(ldaOut.terms,file=paste0("../output/LDAGibbs/",k,"TopicsToTerms.csv"))
+
+#probabilities associated with each topic assignment
+topicProbabilities <- as.data.frame(ldaOut@gamma)
+write.csv(topicProbabilities,file=paste0("../output/LDAGibbs/",k,"TopicProbabilities.csv"))
+
+```
+
+```{r}
+terms.beta=ldaOut@beta
+terms.beta=scale(terms.beta)
+ldaOut.terms
+```
+### Naming the topics
+Rather than guessing the names from terms, I combined the first 3 terms to make them the "Topic name".
+```{r}
+# Create topic labels by combining the first 3 terms
+topics.terms= ldaOut.terms
+topics.hash = NULL
+for (i in 1:k){
+  topic.name = paste(topics.terms[1,i],topics.terms[2,i],
+             topics.terms[3,i], sep='-')
+  topics.hash = c(topics.hash,topic.name)
+}
+topics.hash # list of topics
+colnames(topics.terms) = topic.vec
+
+corpus.list$ldatopic=as.vector(ldaOut.topics)
+corpus.list$ldahash=topics.hash[ldaOut.topics]
+
+colnames(topicProbabilities)=topics.hash
+corpus.list.df=cbind(corpus.list, topicProbabilities)
+
+```
+
+### Clustering
+```{r}
+#clustering
+par(mar=c(1,1,1,1))
+topic.summary=tbl_df(corpus.list.df)%>%
+  filter(Type == "Single-Term")%>%
+  select(File, 23:37)%>%
+  group_by(File)%>%
+  summarise_all(funs(mean))
+topic.summary=as.data.frame(topic.summary)
+rownames(topic.summary)=topic.summary[,1]
+
+topic.plot=1:15
+
+heatmap.2(as.matrix(topic.summary[,topic.plot+1]), 
+          scale = "column",
+          col = rich.colors(100),
+          cexRow = 0.9, cexCol = 0.9, margins = c(8, 8),
+          trace = "none", density.info = "none",
+          main = "Single-term presidents")
+
+par(mar=c(1,1,1,1))
+topic.summary=tbl_df(corpus.list.df)%>%
+  filter(Type == "Multi-Term")%>%
+  select(File, 23:37)%>%
+  group_by(File)%>%
+  summarise_all(funs(mean))
+topic.summary=as.data.frame(topic.summary)
+rownames(topic.summary)=topic.summary[,1]
+
+heatmap.2(as.matrix(topic.summary[,topic.plot+1]), 
+          scale = "column", 
+          col = rich.colors(100),
+          cexRow = 0.9, cexCol = 0.9, margins = c(8, 8),
+          trace = "none", density.info = "none",
+          main = "Multi-term presidents")
+```
+
+Some presidents really focused on a topic, while others spread across multiple topics.
+Recent multi-term presidents talked about freedom, hope, new Americans (immigration?), and world peace.
+
+Recent single-term presidents, including Donald Trump, also talked about similar topics, but they also talked about "will-one-now" which contains words like believ, make, race, good, and give.
+
+Maybe there are more differecences between parties?
+###
+
+```{r}
+par(mfrow=c(2, 2))
+
+speech.df=tbl_df(corpus.list.df)%>%
+  filter(Type == "Single-Term")%>%
+  select(Party, 23:37)%>%group_by(Party)%>%
+  summarise_all(funs(mean))
+speech.df=as.matrix(speech.df)
+speech.df[,-1]=replace(speech.df[,-1], speech.df[,-1]<1/15, 0.001)
+party = c("Democratic","Republican")
+speech.df = data.frame(party,speech.df[,-1],row.names = NULL)
+speech.df.m = melt(speech.df,id.vars='party')
+speech.df.m.ordered <- speech.df.m[order(speech.df.m$value, decreasing = TRUE),]
+speech.df.m.ordered$party <- factor(speech.df.m.ordered$party, 
+                                    levels = c("Republican","Democratic"))
+
+ggplot(data = subset(speech.df.m.ordered)[speech.df.m.ordered$party=="Republican",],
+          aes(x=factor(1),y=value,fill = variable)) +
+  geom_bar(width = 1, stat="identity") + coord_polar(theta="y") +
+  xlab("Republican") + ylab("Single Term") +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()
+  )
+
+ggplot(data = subset(speech.df.m.ordered)[speech.df.m.ordered$party=="Democratic",],
+          aes(x=factor(1),y=value,fill = variable)) +
+  geom_bar(width = 1, stat="identity") + coord_polar(theta="y") +
+  xlab("Democratic") + ylab("Single Term") + 
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank())
+
+
+speech.df=tbl_df(corpus.list.df)%>%
+  filter(Type == "Multi-Term")%>%
+  select(Party, 23:37)%>%group_by(Party)%>%
+  summarise_all(funs(mean))
+speech.df=as.matrix(speech.df)
+speech.df[,-1]=replace(speech.df[,-1], speech.df[,-1]<1/15, 0.001)
+party = c("Democratic","Republican")
+speech.df = data.frame(party,speech.df[,-1],row.names = NULL)
+speech.df.m = melt(speech.df,id.vars='party')
+speech.df.m.ordered <- speech.df.m[order(speech.df.m$value, decreasing = TRUE),]
+speech.df.m.ordered$party <- factor(speech.df.m.ordered$party, 
+                                    levels = c("Republican","Democratic"))
+
+
+ggplot(data = subset(speech.df.m.ordered)[speech.df.m.ordered$party=="Republican",],
+          aes(x=factor(1),y=value,fill = variable)) +
+  geom_bar(width = 1, stat="identity") + coord_polar(theta="y") +
+  xlab("Republican") + ylab("Multi Term") +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()
+  )
+
+ggplot(data = subset(speech.df.m.ordered)[speech.df.m.ordered$party=="Democratic",],
+          aes(x=factor(1),y=value,fill = variable)) +
+  geom_bar(width = 1, stat="identity") + coord_polar(theta="y") +
+  xlab("Democratic") + ylab("Multi Term") + 
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank())
+  
+```
+
+Republicans seem to focus on "will-one-now", but there are some differences between single- vs multi-term presidents among them.
+
+Democrats seem to focus on "peopl-without-civil" and "great-never-countri" if they are single term presidents, but multi-term presidents focus on "can-must-peopl" and "peopl-without-civil".
+
+As the next step of this analysis, it'd be interesting to compare Donald Trump's speech to those by multi-term presidents and single-term presindents, and see if we can predict he will be elected for the second term.
