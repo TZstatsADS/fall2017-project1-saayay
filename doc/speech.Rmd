@@ -374,7 +374,7 @@ for (i in 1:k){
   topics.hash = c(topics.hash,topic.name)
 }
 topics.hash # list of topics
-colnames(topics.terms) = topic.vec
+colnames(topics.terms) = topic.hash
 
 corpus.list$ldatopic=as.vector(ldaOut.topics)
 corpus.list$ldahash=topics.hash[ldaOut.topics]
